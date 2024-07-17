@@ -1,0 +1,142 @@
+import requests
+import pandas as pd
+from bs4 import BeautifulSoup
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+import ta  # Technical analysis library
+import matplotlib.pyplot as plt
+
+# Function to fetch market data from CoinMarketCap
+def fetch_market_data():
+    url = "https://coinmarketcap.com/"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    # Scrape the table containing cryptocurrency data
+    table = soup.find('table', {'class': 'cmc-table'})
+    rows = table.find('tbody').find_all('tr')
+
+    data = []
+    for row in rows:
+        cols = row.find_all('td')
+        try:
+            data.append({
+                'name': cols[2].find('p').text,
+                'symbol': cols[2].find('p', {'class': 'coin-item-symbol'}).text,
+                'price': float(cols[3].text.replace('$', '').replace(',', '')),
+                'percent_change_24h': float(cols[4].text.replace('%', '').replace(',', '')),
+                'percent_change_7d': float(cols[5].text.replace('%', '').replace(',', '')),
+                'market_cap': float(cols[6].text.replace('$', '').replace(',', '')),
+                'volume_24h': float(cols[7].text.replace('$', '').replace(',', '')),
+                'circulating_supply': float(cols[8].text.replace(',', ''))
+            })
+        except (ValueError, AttributeError):
+            continue
+
+    return pd.DataFrame(data)
+
+# Generate additional features
+def generate_features(df):
+    df['price'] = df['price'].astype(float)
+    df['market_cap'] = df['market_cap'].astype(float)
+    df['volume_24h'] = df['volume_24h'].astype(float)
+    df['circulating_supply'] = df['circulating_supply'].astype(float)
+    
+    # Calculate additional features
+    df['ma_7'] = df['price'].rolling(window=7).mean()
+    df['ma_21'] = df['price'].rolling(window=21).mean()
+    df['rsi'] = ta.momentum.rsi(df['price'], window=14)
+    df['macd'] = ta.trend.macd(df['price'])
+    df['bollinger_hband'] = ta.volatility.bollinger_hband(df['price'])
+    df['bollinger_lband'] = ta.volatility.bollinger_lband(df['price'])
+    
+    # Fill missing values
+    df.fillna(0, inplace=True)
+    
+    return df
+
+# Preprocess data for analysis
+def preprocess_data(df):
+    df = generate_features(df)
+    features = df[['percent_change_24h', 'percent_change_7d', 'market_cap', 'volume_24h', 'circulating_supply', 
+                   'ma_7', 'ma_21', 'rsi', 'macd', 'bollinger_hband', 'bollinger_lband']]
+    labels = (df['percent_change_7d'] > 0).astype(int)
+    
+    return features, labels
+
+# Hyperparameter tuning and training the model
+def train_model(features, labels):
+    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
+    
+    model = GradientBoostingClassifier(random_state=42)
+    param_grid = {
+        'n_estimators': [50, 100, 200],
+        'learning_rate': [0.01, 0.1, 0.2],
+        'max_depth': [3, 4, 5]
+    }
+    
+    grid_search = GridSearchCV(model, param_grid, cv=5, scoring='accuracy')
+    grid_search.fit(X_train, y_train)
+    
+    best_model = grid_search.best_estimator_
+    predictions = best_model.predict(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+    precision = precision_score(y_test, predictions)
+    recall = recall_score(y_test, predictions)
+    
+    print(f"Best Parameters: {grid_search.best_params_}")
+    print(f"Model Accuracy: {accuracy * 100:.2f}%")
+    print(f"Model Precision: {precision * 100:.2f}%")
+    print(f"Model Recall: {recall * 100:.2f}%")
+    
+    return best_model
+
+# Generate trade suggestions
+def generate_trade_suggestions(model, features, df):
+    predictions = model.predict(features)
+    df['trade_signal'] = predictions
+    buy_signals = df[df['trade_signal'] == 1][['name', 'symbol', 'price', 'percent_change_24h', 'percent_change_7d', 'market_cap', 'volume_24h', 'circulating_supply']]
+    sell_signals = df[df['trade_signal'] == 0][['name', 'symbol', 'price', 'percent_change_24h', 'percent_change_7d', 'market_cap', 'volume_24h', 'circulating_supply']]
+    return buy_signals, sell_signals
+
+# Function to visualize trade suggestions
+def visualize_trade_suggestions(buy_suggestions, sell_suggestions):
+    fig, ax = plt.subplots(2, 1, figsize=(14, 10))
+    
+    ax[0].bar(buy_suggestions['symbol'], buy_suggestions['percent_change_7d'], color='green')
+    ax[0].set_title('Buy Suggestions: 7-day Percent Change')
+    ax[0].set_ylabel('Percent Change')
+    ax[0].set_xlabel('Cryptocurrency')
+    
+    ax[1].bar(sell_suggestions['symbol'], sell_suggestions['percent_change_7d'], color='red')
+    ax[1].set_title('Sell Suggestions: 7-day Percent Change')
+    ax[1].set_ylabel('Percent Change')
+    ax[1].set_xlabel('Cryptocurrency')
+    
+    plt.tight_layout()
+    plt.show()
+
+# Main function with visualization
+def main_with_visualization():
+    # Fetch and preprocess market data
+    market_data = fetch_market_data()
+    features, labels = preprocess_data(market_data)
+    
+    # Train prediction model
+    model = train_model(features, labels)
+    
+    # Generate trade suggestions
+    buy_suggestions, sell_suggestions = generate_trade_suggestions(model, features, market_data)
+    
+    print("Buy Suggestions:")
+    print(buy_suggestions)
+    
+    print("Sell Suggestions:")
+    print(sell_suggestions)
+    
+    # Visualize trade suggestions
+    visualize_trade_suggestions(buy_suggestions, sell_suggestions)
+
+if __name__ == "__main__":
+    main_with_visualization()
